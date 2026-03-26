@@ -1,0 +1,40 @@
+/* ── Reset & base ─────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  background: #060d18;
+}
+
+body {
+  font-family: 'DM Mono', 'Courier New', monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: #c8daf0;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────── */
+::-webkit-scrollbar         { width: 5px; height: 5px; }
+::-webkit-scrollbar-track   { background: #060d18; }
+::-webkit-scrollbar-thumb   { background: #1a2d40; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #2a4a6a; }
+
+/* ── Select options ───────────────────────────────────────── */
+select option { background: #080f1c; color: #8ab4d4; }
+
+/* ── Animations ───────────────────────────────────────────── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.25; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in { animation: fadeIn 0.25s ease both; }
