@@ -81,6 +81,6 @@ export class FMPClient {
   }
 
   async analystEstimates(ticker) {
-    return this.fetch("analyst-estimates", { symbol: ticker });
+    return this.fetch("analyst-estimates", { symbol: ticker, period: "annual" });
   }
 }
