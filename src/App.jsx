@@ -395,6 +395,54 @@ function FactorDetailPanel({ factor }) {
     );
   }
 
+  // Insider Trading
+  if (d.buyVolume !== undefined && d.sellVolume !== undefined && d.netRatio !== undefined) {
+    const fmtDollar = (n) => n >= 1e6 ? `$${(n/1e6).toFixed(1)}M` : n >= 1e3 ? `$${(n/1e3).toFixed(0)}K` : `$${n}`;
+    return (
+      <div style={box}>
+        {d.note ? (
+          <div style={{color:"#5a7a9a",fontSize:12}}>{d.note}</div>
+        ) : (
+          <>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:12}}>
+              <div><div style={LABEL}>BUY VOLUME</div><div style={{...VAL,color:"#4ade80"}}>{fmtDollar(d.buyVolume)}</div></div>
+              <div><div style={LABEL}>SELL VOLUME</div><div style={{...VAL,color:"#f87171"}}>{fmtDollar(d.sellVolume)}</div></div>
+              <div><div style={LABEL}>NET RATIO</div><div style={{...VAL,color:d.netRatio>=0?"#4ade80":"#f87171",fontWeight:700}}>{d.netRatio>0?"+":""}{d.netRatio.toFixed(3)}</div></div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
+              <div><div style={LABEL}>TRANSACTIONS</div><div style={VAL}>{d.totalTransactions} ({d.buyCount} buys, {d.sellCount} sells)</div></div>
+              <div><div style={LABEL}>UNIQUE BUYERS</div><div style={VAL}>{d.uniqueBuyers}{d.clusterMultiplier>1?` (${d.clusterMultiplier}x cluster bonus)`:""}</div></div>
+              <div><div style={LABEL}>CONFIDENCE</div><div style={{...VAL,color:d.confidence==="high"?"#4ade80":d.confidence==="medium"?"#fbbf24":"#5a7a9a"}}>{d.confidence?.toUpperCase()}</div></div>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  // Analyst Dispersion
+  if (d.dispersion !== undefined && d.numAnalysts !== undefined) {
+    return (
+      <div style={box}>
+        {d.note ? (
+          <div style={{color:"#5a7a9a",fontSize:12}}>{d.note}</div>
+        ) : (
+          <>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:12}}>
+              <div><div style={LABEL}>EPS ESTIMATES</div><div style={VAL}>{d.epsLow?.toFixed(2)} / <span style={{fontWeight:700,color:"#c8daf0"}}>{d.epsAvg?.toFixed(2)}</span> / {d.epsHigh?.toFixed(2)}</div></div>
+              <div><div style={LABEL}>DISPERSION</div><div style={{...VAL,color:d.dispersion<0.25?"#4ade80":d.dispersion<0.50?"#fbbf24":"#f87171",fontWeight:700}}>{d.useAbsoluteSpread?"$":"" }{d.dispersion.toFixed(3)}{d.useAbsoluteSpread?"":" (ratio)"}</div></div>
+              <div><div style={LABEL}>ANALYSTS</div><div style={VAL}>{d.numAnalysts} (modifier: {d.modifier})</div></div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:12}}>
+              <div><div style={LABEL}>PERIOD</div><div style={VAL}>{d.period}</div></div>
+              <div><div style={LABEL}>CONFIDENCE</div><div style={{...VAL,color:d.confidence==="high"?"#4ade80":d.confidence==="medium"?"#fbbf24":"#5a7a9a"}}>{d.confidence?.toUpperCase()}</div></div>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
   // 10-K Filing Similarity
   if (d.avg_similarity !== undefined) {
     const sig10k = classifySignal(d.avg_similarity);
@@ -425,6 +473,8 @@ function getKeyDetail(f) {
   if (d.slope_pp_per_quarter !== undefined) return `${d.trend}, \u0394margin ${d.margin_change_pp>0?"+":""}${d.margin_change_pp?.toFixed(2)}pp`;
   if (d.accruals_ratio !== undefined) return `Ratio ${d.accruals_ratio>0?"+":""}${d.accruals_ratio?.toFixed(4)}`;
   if (d.momentum_return_pct !== undefined) return `12-1 return ${d.momentum_return_pct>0?"+":""}${d.momentum_return_pct?.toFixed(1)}%`;
+  if (d.buyVolume !== undefined && d.netRatio !== undefined) return d.totalTransactions===0 ? "No activity" : `${d.buyCount} buys / ${d.sellCount} sells, net ${d.netRatio>0?"+":""}${d.netRatio.toFixed(3)}`;
+  if (d.dispersion !== undefined && d.numAnalysts !== undefined) return d.note || `Dispersion ${d.dispersion.toFixed(3)}, ${d.numAnalysts} analysts`;
   if (d.avg_similarity !== undefined) return `${(d.avg_similarity*100).toFixed(1)}% similar \u2014 ${d.classification}`;
   return "";
 }
@@ -818,7 +868,7 @@ function AssetProfileView({ ticker }) {
                 {filingDocs.length === 0 && (
                   <div style={{color:"#3a5a7a",fontSize:13,marginBottom:14,lineHeight:1.6}}>
                     No 10-K filings uploaded for {ticker}. Upload the prior year and current year 10-K to enable this signal.
-                    It will be added to the composite score with 20% weight.
+                    It will be added to the composite score with 10% weight.
                   </div>
                 )}
                 <DropZone onFiles={handleFilingUpload} label={filingLoading ? "Processing..." : `Upload 10-K filing ${filingDocs.length + 1} of 2`}/>
@@ -907,7 +957,6 @@ function AssetProfileView({ ticker }) {
             <div style={{...SECTION_TITLE,marginBottom:14}}>COMING SOON</div>
             <div style={{display:"flex",flexDirection:"column",gap:2}}>
               <FuturePlaceholder name="Short Interest Level" description="Borrow cost and days-to-cover signal"/>
-              <FuturePlaceholder name="Insider Buying vs Selling" description="Net insider transaction direction"/>
               <FuturePlaceholder name="Management Tone Shift" description="NLP analysis on earnings call transcripts"/>
             </div>
           </div>
