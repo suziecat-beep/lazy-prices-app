@@ -58,11 +58,11 @@ export function computeComposite(factorResults) {
  * Returns the factor results and a composite. The UI may recalculate the composite
  * after adding the 10-K filing similarity factor.
  */
-export async function evaluateTicker(ticker, apiKey, onProgress) {
-  if (!ticker || !apiKey) throw new Error("Ticker and API key are required");
+export async function evaluateTicker(ticker, onProgress) {
+  if (!ticker) throw new Error("Ticker is required");
 
   const symbol = ticker.toUpperCase().trim();
-  const client = new FMPClient(apiKey);
+  const client = new FMPClient();
 
   // Validate ticker exists first — also captures company name
   const quoteData = await client.quote(symbol);
