@@ -5,7 +5,7 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 import { evaluateTicker, computeComposite } from "./engine/scoring.js";
-import { getApiKey, setApiKey, clearApiKey, CONFIG, similarityToFactorScore } from "./config.js";
+import { CONFIG, similarityToFactorScore } from "./config.js";
 import { scoreToSignal } from "./factors/factor-base.js";
 import { FMPClient } from "./api/fmp.js";
 import {
@@ -476,35 +476,6 @@ function FuturePlaceholder({ name, description }) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// API KEY GATE
-// ══════════════════════════════════════════════════════════════════════════════
-
-function ApiKeyGate({ onReady }) {
-  const [input, setInput] = useState("");
-  return (
-    <div style={{minHeight:"100vh",background:"#060d18",display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{...CARD,maxWidth:480,width:"100%"}}>
-        <div style={SECTION_TITLE}>FMP API KEY REQUIRED</div>
-        <p style={{color:"#3a5a7a",fontSize:13,marginTop:12,marginBottom:16,lineHeight:1.6}}>
-          This app uses the Financial Modeling Prep API for live financial data.
-          Get a free key (250 calls/day) at <span style={{color:"#2a6bbf"}}>financialmodelingprep.com</span>.
-          Your key is stored only in your browser.
-        </p>
-        <div style={{display:"flex",gap:10}}>
-          <input value={input} onChange={e=>setInput(e.target.value)}
-            onKeyDown={e=>{if(e.key==="Enter"&&input.trim()){setApiKey(input.trim());onReady();}}}
-            placeholder="Paste your FMP API key here..."
-            style={{flex:1,background:"#080f1c",border:"1px solid #1a2d40",color:"#c8daf0",padding:"10px 14px",borderRadius:8,fontSize:13,outline:"none"}}/>
-          <button onClick={()=>{if(input.trim()){setApiKey(input.trim());onReady();}}} disabled={!input.trim()}
-            style={{background:"#1e3a5a",border:"none",color:"#c8daf0",padding:"10px 20px",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,opacity:input.trim()?1:0.4}}>
-            Save Key
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // WATCHLIST VIEW (home page)
@@ -515,7 +486,6 @@ function WatchlistView() {
   const [input, setInput] = useState("");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState(null);
-  const apiKey = getApiKey();
 
   // Load cached data for all tickers
   const tickerData = useMemo(() => {
@@ -530,7 +500,7 @@ function WatchlistView() {
     setAdding(true);
     setAddError(null);
     try {
-      const client = new FMPClient(apiKey);
+      const client = new FMPClient();
       const q = await client.quote(sym);
       const arr = Array.isArray(q) ? q : [];
       if (arr.length === 0 || !arr[0]?.symbol) throw new Error(`Ticker "${sym}" not found`);
@@ -564,10 +534,6 @@ function WatchlistView() {
               color:adding?"#3a5a7a":"#c8daf0",padding:"12px 24px",borderRadius:8,cursor:adding?"default":"pointer",
               fontSize:14,fontWeight:700,letterSpacing:1,whiteSpace:"nowrap"}}>
             {adding ? "Adding..." : "Add"}
-          </button>
-          <button onClick={()=>{clearApiKey();window.location.reload();}} title="Change API key"
-            style={{background:"transparent",border:"1px solid #1a2d40",color:"#3a5a7a",padding:"12px 14px",borderRadius:8,cursor:"pointer",fontSize:12}}>
-            Key
           </button>
         </div>
         {addError && <div style={{marginTop:10,color:"#f87171",fontSize:12}}>{addError}</div>}
@@ -645,7 +611,6 @@ function AssetProfileView({ ticker }) {
   const [filingDocs, setFilingDocs] = useState(() => data?.filing?.docs || []);
   const [filingLoading, setFilingLoading] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
-  const apiKey = getApiKey();
 
   // Compute filing similarity whenever docs change
   const filingResult = useMemo(() => {
@@ -699,7 +664,7 @@ function AssetProfileView({ ticker }) {
   async function runEvaluation() {
     setLoading(true); setError(null); setProgress([]);
     try {
-      const result = await evaluateTicker(ticker, apiKey, (name, r) => {
+      const result = await evaluateTicker(ticker, (name, r) => {
         setProgress(p => [...p, { name, signal: r.signal, score: r.score }]);
       });
       const updated = {
@@ -967,9 +932,6 @@ function AssetProfileView({ ticker }) {
 
 export default function App() {
   const route = useHashRouter();
-  const [hasKey, setHasKey] = useState(() => !!getApiKey());
-
-  if (!hasKey) return <ApiKeyGate onReady={() => setHasKey(true)} />;
 
   return (
     <div style={{minHeight:"100vh",background:"#060d18",paddingBottom:80}}>
