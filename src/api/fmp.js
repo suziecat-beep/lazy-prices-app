@@ -26,6 +26,9 @@ export class FMPClient {
     this.callCount++;
     const response = await globalThis.fetch(url.toString());
 
+    if (response.status === 402) {
+      throw new Error(`"${params.symbol || ""}" is not available on the free FMP plan. Only major-exchange stocks are supported.`);
+    }
     if (!response.ok) {
       throw new Error(`FMP API error: ${response.status} ${response.statusText}`);
     }
