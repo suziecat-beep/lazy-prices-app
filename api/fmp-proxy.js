@@ -1,50 +1,86 @@
-// Vercel serverless function — proxies FMP API requests so the key stays server-side.
-// The API key is read from the Vercel environment variable FMP_API_KEY.
+// ══════════════════════════════════════════════════════════════════════════════
+// FMP API CLIENT — routes through /api/fmp-proxy (Vercel serverless function)
+// so the API key never touches the browser.
+// ══════════════════════════════════════════════════════════════════════════════
 
-const FMP_BASE = "https://financialmodelingprep.com/stable";
-
-export default async function handler(req, res) {
-  const apiKey = process.env.FMP_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: "FMP_API_KEY not configured on server" });
+export class FMPClient {
+  constructor() {
+    this._cache = new Map();
+    this.callCount = 0;
   }
 
-  const { endpoint, ...params } = req.query;
-  if (!endpoint) {
-    return res.status(400).json({ error: "Missing 'endpoint' query parameter" });
-  }
+  async fetch(endpoint, params = {}) {
+    const cacheKey = endpoint + "|" + JSON.stringify(params);
+    if (this._cache.has(cacheKey)) {
+      return this._cache.get(cacheKey);
+    }
 
-  // Only allow known FMP endpoints (prevent open relay)
-  const allowed = [
-    "quote",
-    "income-statement",
-    "balance-sheet-statement",
-    "cash-flow-statement",
-    "historical-price-eod/full",
-  ];
-  if (!allowed.includes(endpoint)) {
-    return res.status(400).json({ error: `Endpoint "${endpoint}" is not allowed` });
-  }
+    const url = new URL("/api/fmp-proxy", window.location.origin);
+    url.searchParams.set("endpoint", endpoint);
+    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
 
-  const url = new URL(`${FMP_BASE}/${endpoint}`);
-  url.searchParams.set("apikey", apiKey);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+    this.callCount++;
+    const response = await globalThis.fetch(url.toString());
 
-  try {
-    const response = await fetch(url.toString());
+    if (response.status === 402) {
+      throw new Error(`"${params.symbol || ""}" is not available on the free FMP plan. Only major-exchange stocks are supported.`);
+    }
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`API error (${response.status}): ${body.slice(0, 200) || response.statusText}`);
+    }
+
     const text = await response.text();
 
-    // Forward FMP's status code and body as-is
-    res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
-    res.status(response.status);
-
-    // Try to return as JSON, fall back to text
-    try {
-      res.json(JSON.parse(text));
-    } catch {
-      res.send(text);
+    if (text.startsWith("Premium") || text.startsWith("Query Error")) {
+      throw new Error(text.slice(0, 200));
     }
-  } catch (err) {
-    res.status(502).json({ error: `Upstream error: ${err.message}` });
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`Unexpected response: ${text.slice(0, 200)}`);
+    }
+
+    if (data && data.error) {
+      throw new Error(data.error);
+    }
+    if (data && data["Error Message"]) {
+      throw new Error(data["Error Message"]);
+    }
+
+    this._cache.set(cacheKey, data);
+    return data;
+  }
+
+  // ── Convenience methods ──────────────────────────────────────────────────
+
+  async incomeStatement(ticker, period = "quarter", limit = 5) {
+    return this.fetch("income-statement", { symbol: ticker, period, limit });
+  }
+
+  async balanceSheet(ticker, period = "annual", limit = 2) {
+    return this.fetch("balance-sheet-statement", { symbol: ticker, period, limit });
+  }
+
+  async cashFlowStatement(ticker, period = "annual", limit = 2) {
+    return this.fetch("cash-flow-statement", { symbol: ticker, period, limit });
+  }
+
+  async historicalPrice(ticker, from, to) {
+    return this.fetch("historical-price-eod/full", { symbol: ticker, from, to });
+  }
+
+  async quote(ticker) {
+    return this.fetch("quote", { symbol: ticker });
+  }
+
+  async insiderTrading(ticker) {
+    return this.fetch("insider-trading", { symbol: ticker });
+  }
+
+  async analystEstimates(ticker) {
+    return this.fetch("analyst-estimates", { symbol: ticker });
   }
 }
