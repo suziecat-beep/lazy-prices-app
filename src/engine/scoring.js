@@ -8,6 +8,8 @@ import { RevenueGrowthFactor } from "../factors/revenue-growth.js";
 import { GrossMarginFactor } from "../factors/gross-margin.js";
 import { AccrualsRatioFactor } from "../factors/accruals-ratio.js";
 import { PriceMomentumFactor } from "../factors/price-momentum.js";
+import { InsiderTradingFactor } from "../factors/insider-trading.js";
+import { AnalystDispersionFactor } from "../factors/analyst-dispersion.js";
 import { CONFIG } from "../config.js";
 
 const FACTORS = [
@@ -16,6 +18,8 @@ const FACTORS = [
   new GrossMarginFactor(),
   new AccrualsRatioFactor(),
   new PriceMomentumFactor(),
+  new InsiderTradingFactor(),
+  new AnalystDispersionFactor(),
 ];
 
 function getSignal(composite) {
