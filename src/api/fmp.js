@@ -75,4 +75,12 @@ export class FMPClient {
   async quote(ticker) {
     return this.fetch("quote", { symbol: ticker });
   }
+
+  async insiderTrading(ticker) {
+    return this.fetch("insider-trading", { symbol: ticker });
+  }
+
+  async analystEstimates(ticker) {
+    return this.fetch("analyst-estimates", { symbol: ticker });
+  }
 }
