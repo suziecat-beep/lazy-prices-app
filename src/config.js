@@ -9,12 +9,14 @@ export const CONFIG = {
   },
 
   weights: {
-    earningsSurprise: 0.12,
-    revenueGrowth: 0.10,
-    grossMargin: 0.08,
-    accrualsRatio: 0.08,
-    priceMomentum: 0.08,
-    filingSimilarity: 0.20,
+    earningsSurprise: 0.16,
+    revenueGrowth: 0.14,
+    grossMargin: 0.12,
+    accrualsRatio: 0.12,
+    priceMomentum: 0.14,
+    filingSimilarity: 0.10,
+    insiderTrading: 0.12,
+    analystDispersion: 0.10,
   },
 
   signalThresholds: {
