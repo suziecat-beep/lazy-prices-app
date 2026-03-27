@@ -1,14 +1,10 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// FMP API CLIENT — all HTTP calls go through here
-// Uses the /stable/ API (v3 was deprecated Aug 2025)
+// FMP API CLIENT — routes through /api/fmp-proxy (Vercel serverless function)
+// so the API key never touches the browser.
 // ══════════════════════════════════════════════════════════════════════════════
 
-const FMP_BASE = "https://financialmodelingprep.com/stable";
-
 export class FMPClient {
-  constructor(apiKey) {
-    this.apiKey = apiKey;
-    // In-memory cache keyed by "endpoint|paramString" — lives for one client instance
+  constructor() {
     this._cache = new Map();
     this.callCount = 0;
   }
@@ -19,8 +15,8 @@ export class FMPClient {
       return this._cache.get(cacheKey);
     }
 
-    const url = new URL(`${FMP_BASE}/${endpoint}`);
-    url.searchParams.set("apikey", this.apiKey);
+    const url = new URL("/api/fmp-proxy", window.location.origin);
+    url.searchParams.set("endpoint", endpoint);
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
 
     this.callCount++;
@@ -30,26 +26,28 @@ export class FMPClient {
       throw new Error(`"${params.symbol || ""}" is not available on the free FMP plan. Only major-exchange stocks are supported.`);
     }
     if (!response.ok) {
-      throw new Error(`FMP API error: ${response.status} ${response.statusText}`);
+      const body = await response.text().catch(() => "");
+      throw new Error(`API error (${response.status}): ${body.slice(0, 200) || response.statusText}`);
     }
 
     const text = await response.text();
 
-    // FMP sometimes returns non-JSON error strings with 200 status
     if (text.startsWith("Premium") || text.startsWith("Query Error")) {
-      throw new Error(`FMP: ${text.slice(0, 200)}`);
+      throw new Error(text.slice(0, 200));
     }
 
     let data;
     try {
       data = JSON.parse(text);
     } catch {
-      throw new Error(`FMP: unexpected response — ${text.slice(0, 200)}`);
+      throw new Error(`Unexpected response: ${text.slice(0, 200)}`);
     }
 
-    // Surface FMP's own error messages (they return 200 with an error key)
+    if (data && data.error) {
+      throw new Error(data.error);
+    }
     if (data && data["Error Message"]) {
-      throw new Error(`FMP: ${data["Error Message"]}`);
+      throw new Error(data["Error Message"]);
     }
 
     this._cache.set(cacheKey, data);
@@ -57,8 +55,6 @@ export class FMPClient {
   }
 
   // ── Convenience methods ──────────────────────────────────────────────────
-  // Stable API: ticker is passed as ?symbol= query param (not in URL path)
-  // Free tier limit: max 5 for financial statement endpoints
 
   async incomeStatement(ticker, period = "quarter", limit = 5) {
     return this.fetch("income-statement", { symbol: ticker, period, limit });
