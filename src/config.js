@@ -31,20 +31,6 @@ export const CONFIG = {
   },
 };
 
-export const LOCAL_STORAGE_KEY = "fmp_api_key";
-
-export function getApiKey() {
-  return localStorage.getItem(LOCAL_STORAGE_KEY) || "";
-}
-
-export function setApiKey(key) {
-  localStorage.setItem(LOCAL_STORAGE_KEY, key.trim());
-}
-
-export function clearApiKey() {
-  localStorage.removeItem(LOCAL_STORAGE_KEY);
-}
-
 /**
  * Map 10-K average similarity (0-1) to the factor score scale (-1 to +1).
  * Based on the quintile thresholds from Cohen, Malloy & Nguyen (2018).
