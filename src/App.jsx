@@ -569,10 +569,10 @@ function TagPill({ tag, small, onRemove }) {
   );
 }
 
-function TagAssignDropdown({ ticker, onClose }) {
+function TagAssignDropdown({ ticker, onClose, onChange }) {
+  const [revision, setRevision] = useState(0);
   const store = getTagStore();
   const assigned = (store.assignments[ticker.toUpperCase()] || []);
-  const [, forceUpdate] = useState(0);
 
   function toggle(tagId) {
     if (assigned.includes(tagId)) {
@@ -580,7 +580,8 @@ function TagAssignDropdown({ ticker, onClose }) {
     } else {
       assignTag(ticker, tagId);
     }
-    forceUpdate(n => n + 1);
+    setRevision(n => n + 1);
+    if (onChange) onChange();
   }
 
   return (
@@ -633,6 +634,7 @@ function WatchlistView() {
   const [tagInput, setTagInput] = useState("");
   const [editingTag, setEditingTag] = useState(null); // { id, name } for rename
   const [tagDropdown, setTagDropdown] = useState(null); // ticker symbol or null
+  const [tagRevision, setTagRevision] = useState(0); // forces re-render when tags assigned
   const [showManageTags, setShowManageTags] = useState(false);
   const tagInputRef = useRef(null);
   const renameInputRef = useRef(null);
@@ -670,7 +672,8 @@ function WatchlistView() {
       const ids = store.assignments[sym] || [];
       return selectedTags.some(tagId => ids.includes(tagId));
     });
-  }, [watchlist, selectedTags]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchlist, selectedTags, tagRevision]);
 
   async function handleAdd() {
     const sym = input.toUpperCase().trim();
@@ -986,8 +989,8 @@ function WatchlistView() {
                     <span style={{color:"#c8daf0",fontSize:15,fontWeight:800,letterSpacing:1}}>{sym}</span>
                     <SignalChangeBadge ticker={sym} />
                   </span>
-                  <span style={{display:"flex",alignItems:"center",gap:4,overflow:"hidden"}}>
-                    <span style={{color:"#5a7a9a",fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{td?.companyName || "\u2014"}</span>
+                  <span style={{display:"flex",alignItems:"center",gap:4,minWidth:0}}>
+                    <span style={{color:"#5a7a9a",fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:"0 1 auto",minWidth:0}}>{td?.companyName || "\u2014"}</span>
                     {tickerTags.map(tag => <TagPill key={tag.id} tag={tag} small />)}
                     <span onClick={e=>{e.stopPropagation();setTagDropdown(tagDropdown===sym?null:sym);}}
                       style={{position:"relative",color:"#2a4060",fontSize:10,cursor:"pointer",flexShrink:0,padding:"1px 4px",
@@ -995,7 +998,7 @@ function WatchlistView() {
                       onMouseEnter={e=>e.currentTarget.style.borderColor="#1a2d40"}
                       onMouseLeave={e=>e.currentTarget.style.borderColor="transparent"}>
                       +tag
-                      {tagDropdown === sym && <TagAssignDropdown ticker={sym} onClose={()=>setTagDropdown(null)} />}
+                      {tagDropdown === sym && <TagAssignDropdown ticker={sym} onClose={()=>setTagDropdown(null)} onChange={()=>setTagRevision(n=>n+1)} />}
                     </span>
                   </span>
                   {sm ? (
@@ -1160,7 +1163,7 @@ function AssetProfileView({ ticker }) {
   // Split factors into sections
   const fundamentals = allFactors.filter(f => f.category === "fundamental");
   const filing10k = allFactors.filter(f => f.name === "10-K Filing Similarity");
-  const market = allFactors.filter(f => f.category === "intermediate" || f.name === "Accruals Ratio");
+  const market = allFactors.filter(f => f.category === "intermediate");
 
   async function runEvaluation() {
     setLoading(true); setError(null); setProgress([]);
