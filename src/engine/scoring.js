@@ -94,5 +94,7 @@ export async function evaluateTicker(ticker, onProgress) {
     ...comp,
     factors: factorResults,
     apiCallCount: client.callCount,
+    cacheHits: client.cacheHits,
+    fromCache: client.callCount === 0 && client.cacheHits > 0,
   };
 }
