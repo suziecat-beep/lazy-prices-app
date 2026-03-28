@@ -14,6 +14,11 @@ import {
 } from "./storage.js";
 import { clearAllCache, getCacheStats } from "./services/apiCache.js";
 import { batchEvaluate, loadBatchResults } from "./services/batchEvaluate.js";
+import { recordSignal, getRecentChanges, getLastSignalChange } from "./services/signalHistory.js";
+import {
+  getTagStore, createTag, deleteTag, renameTag,
+  assignTag, removeTagFromTicker, getTickerTags, getDefaultSuggestedTags,
+} from "./services/watchlistTags.js";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // STOP WORDS & SENTIMENT (Loughran-McDonald)
@@ -533,6 +538,79 @@ function FuturePlaceholder({ name, description }) {
 // WATCHLIST VIEW (home page)
 // ══════════════════════════════════════════════════════════════════════════════
 
+function SignalChangeBadge({ ticker }) {
+  const change = getLastSignalChange(ticker);
+  if (!change) return null;
+  const isUpgrade = change.direction === "upgrade";
+  const isDowngrade = change.direction === "downgrade";
+  const arrow = isUpgrade ? "\u2191" : isDowngrade ? "\u2193" : "\u2022";
+  const color = isUpgrade ? "#4ade80" : isDowngrade ? "#f87171" : "#facc15";
+  const bg = isUpgrade ? "rgba(74,222,128,0.1)" : isDowngrade ? "rgba(248,113,113,0.1)" : "rgba(250,204,21,0.08)";
+  return (
+    <span title={`${change.previousSignal} \u2192 ${change.currentSignal}`}
+      style={{display:"inline-flex",alignItems:"center",gap:2,padding:"1px 5px",borderRadius:4,
+        background:bg,color,fontSize:9,fontWeight:700,marginLeft:4,letterSpacing:0.3,border:`1px solid ${color}33`}}>
+      {arrow} {change.currentSignal}
+    </span>
+  );
+}
+
+function TagPill({ tag, small, onRemove }) {
+  return (
+    <span style={{display:"inline-flex",alignItems:"center",gap:3,padding:small?"1px 5px":"2px 8px",
+      borderRadius:10,background:`${tag.color}18`,border:`1px solid ${tag.color}44`,
+      color:tag.color,fontSize:small?9:10,fontWeight:600,letterSpacing:0.3,whiteSpace:"nowrap"}}>
+      {tag.name}
+      {onRemove && (
+        <span onClick={e=>{e.stopPropagation();onRemove();}}
+          style={{cursor:"pointer",marginLeft:1,opacity:0.7,fontSize:small?8:9}}>\u00d7</span>
+      )}
+    </span>
+  );
+}
+
+function TagAssignDropdown({ ticker, onClose }) {
+  const store = getTagStore();
+  const assigned = (store.assignments[ticker.toUpperCase()] || []);
+  const [, forceUpdate] = useState(0);
+
+  function toggle(tagId) {
+    if (assigned.includes(tagId)) {
+      removeTagFromTicker(ticker, tagId);
+    } else {
+      assignTag(ticker, tagId);
+    }
+    forceUpdate(n => n + 1);
+  }
+
+  return (
+    <div onClick={e=>e.stopPropagation()}
+      style={{position:"absolute",top:"100%",left:0,zIndex:100,marginTop:4,
+        background:"#0b1420",border:"1px solid #1a2d40",borderRadius:8,padding:8,
+        minWidth:160,boxShadow:"0 8px 24px rgba(0,0,0,0.4)"}}>
+      {store.tags.length === 0 ? (
+        <div style={{color:"#3a5a7a",fontSize:11,padding:4}}>No tags yet. Create one above.</div>
+      ) : store.tags.map(tag => {
+        const checked = assigned.includes(tag.id);
+        return (
+          <div key={tag.id} onClick={()=>toggle(tag.id)}
+            style={{display:"flex",alignItems:"center",gap:8,padding:"5px 6px",borderRadius:4,cursor:"pointer",
+              background:checked?"rgba(42,107,191,0.08)":"transparent"}}
+            onMouseEnter={e=>e.currentTarget.style.background=checked?"rgba(42,107,191,0.12)":"#0d1828"}
+            onMouseLeave={e=>e.currentTarget.style.background=checked?"rgba(42,107,191,0.08)":"transparent"}>
+            <span style={{width:12,height:12,borderRadius:3,border:`1px solid ${tag.color}`,
+              background:checked?tag.color:"transparent",display:"flex",alignItems:"center",justifyContent:"center",
+              fontSize:8,color:"#fff",fontWeight:700}}>{checked?"\u2713":""}</span>
+            <span style={{color:tag.color,fontSize:11,fontWeight:600}}>{tag.name}</span>
+          </div>
+        );
+      })}
+      <div onClick={onClose} style={{marginTop:4,padding:"4px 6px",textAlign:"center",color:"#3a5a7a",fontSize:10,cursor:"pointer",
+        borderTop:"1px solid #1a2d40"}}>Done</div>
+    </div>
+  );
+}
+
 function WatchlistView() {
   const [watchlist, setWatchlist] = useState(getWatchlist);
   const [input, setInput] = useState("");
@@ -548,6 +626,17 @@ function WatchlistView() {
   // Refresh counter to force re-read of tickerData after batch
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Tag state
+  const [tagStore, setTagStore] = useState(getTagStore);
+  const [selectedTags, setSelectedTags] = useState([]); // array of tag IDs for filtering
+  const [showTagInput, setShowTagInput] = useState(false);
+  const [tagInput, setTagInput] = useState("");
+  const [editingTag, setEditingTag] = useState(null); // { id, name } for rename
+  const [tagDropdown, setTagDropdown] = useState(null); // ticker symbol or null
+  const [showManageTags, setShowManageTags] = useState(false);
+  const tagInputRef = useRef(null);
+  const renameInputRef = useRef(null);
+
   // Load cached data for all tickers
   const tickerData = useMemo(() => {
     const map = {};
@@ -555,6 +644,33 @@ function WatchlistView() {
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchlist, refreshKey]);
+
+  // Recent signal changes (last 7 days)
+  const recentChanges = useMemo(() => {
+    return getRecentChanges(watchlist, 7);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchlist, refreshKey]);
+
+  // Build a set of tickers with signal changes from last batch
+  const batchSignalChanges = useMemo(() => {
+    const map = {};
+    if (batchResults?.signalChanges) {
+      for (const c of batchResults.signalChanges) {
+        map[c.ticker] = c;
+      }
+    }
+    return map;
+  }, [batchResults]);
+
+  // Filter watchlist by selected tags
+  const filteredWatchlist = useMemo(() => {
+    if (selectedTags.length === 0) return watchlist;
+    const store = getTagStore();
+    return watchlist.filter(sym => {
+      const ids = store.assignments[sym] || [];
+      return selectedTags.some(tagId => ids.includes(tagId));
+    });
+  }, [watchlist, selectedTags]);
 
   async function handleAdd() {
     const sym = input.toUpperCase().trim();
@@ -586,10 +702,10 @@ function WatchlistView() {
     setBatchRunning(true);
     setBatchProgress({ current: 0, total: watchlist.length, ticker: "" });
     try {
-      const results = await batchEvaluate(watchlist, (current, total, ticker) => {
+      const { results, signalChanges } = await batchEvaluate(watchlist, (current, total, ticker) => {
         setBatchProgress({ current, total, ticker });
       });
-      setBatchResults({ results, completedAt: new Date().toISOString() });
+      setBatchResults({ results, signalChanges, completedAt: new Date().toISOString() });
       setRefreshKey(k => k + 1);
     } finally {
       setBatchRunning(false);
@@ -600,6 +716,33 @@ function WatchlistView() {
   function handleSort(col) {
     if (sortCol === col) setSortAsc(a => !a);
     else { setSortCol(col); setSortAsc(false); }
+  }
+
+  // Tag handlers
+  function handleCreateTag(name) {
+    if (!name.trim()) return;
+    createTag(name);
+    setTagStore(getTagStore());
+    setTagInput("");
+    setShowTagInput(false);
+  }
+
+  function handleDeleteTag(tagId) {
+    deleteTag(tagId);
+    setSelectedTags(s => s.filter(id => id !== tagId));
+    setTagStore(getTagStore());
+    setShowManageTags(false);
+  }
+
+  function handleRenameTag(tagId, newName) {
+    if (!newName.trim()) return;
+    renameTag(tagId, newName);
+    setTagStore(getTagStore());
+    setEditingTag(null);
+  }
+
+  function toggleTagFilter(tagId) {
+    setSelectedTags(s => s.includes(tagId) ? s.filter(id => id !== tagId) : [...s, tagId]);
   }
 
   // Sort batch results
@@ -623,6 +766,18 @@ function WatchlistView() {
     </span>
   );
 
+  // Focus tag input when shown
+  useEffect(() => {
+    if (showTagInput && tagInputRef.current) tagInputRef.current.focus();
+  }, [showTagInput]);
+  useEffect(() => {
+    if (editingTag && renameInputRef.current) renameInputRef.current.focus();
+  }, [editingTag]);
+
+  // Suggested tags for empty state
+  const suggestedTags = getDefaultSuggestedTags();
+  const hasNoTags = tagStore.tags.length === 0;
+
   return (
     <div style={{maxWidth:900,margin:"0 auto",padding:"24px 20px"}}>
       {/* Add ticker bar */}
@@ -641,6 +796,39 @@ function WatchlistView() {
         </div>
         {addError && <div style={{marginTop:10,color:"#f87171",fontSize:12}}>{addError}</div>}
       </div>
+
+      {/* Recent Signal Changes */}
+      {recentChanges.length > 0 && (
+        <div style={{...CARD,marginBottom:20,padding:"14px 18px",
+          background:"linear-gradient(135deg,#0b1420 0%,#0d1828 100%)"}}>
+          <div style={{...SECTION_TITLE,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:13}}>RECENT CHANGES</span>
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+            {recentChanges.map(c => {
+              const isUp = c.direction === "upgrade";
+              const isDown = c.direction === "downgrade";
+              const color = isUp ? "#4ade80" : isDown ? "#f87171" : "#facc15";
+              const arrow = isUp ? "\u2191" : isDown ? "\u2193" : "\u2022";
+              const daysAgo = Math.round((Date.now() - new Date(c.changedAt).getTime()) / 86400000);
+              const ageStr = daysAgo === 0 ? "today" : daysAgo === 1 ? "1d ago" : `${daysAgo}d ago`;
+              return (
+                <span key={c.ticker} onClick={()=>navigate(`/ticker/${c.ticker}`)}
+                  style={{display:"inline-flex",alignItems:"center",gap:4,padding:"4px 10px",borderRadius:6,
+                    background:`${color}0a`,border:`1px solid ${color}30`,cursor:"pointer",transition:"background 0.15s"}}
+                  onMouseEnter={e=>e.currentTarget.style.background=`${color}18`}
+                  onMouseLeave={e=>e.currentTarget.style.background=`${color}0a`}>
+                  <span style={{color:"#c8daf0",fontSize:12,fontWeight:800,letterSpacing:0.5}}>{c.ticker}</span>
+                  <span style={{color:"#3a5a7a",fontSize:10}}>{c.previousSignal}</span>
+                  <span style={{color,fontSize:10,fontWeight:700}}>{arrow}</span>
+                  <span style={{color,fontSize:10,fontWeight:700}}>{c.currentSignal}</span>
+                  <span style={{color:"#2a3a4a",fontSize:9,marginLeft:2}}>{ageStr}</span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Watchlist table */}
       {watchlist.length === 0 ? (
@@ -673,6 +861,102 @@ function WatchlistView() {
             </div>
           </div>
 
+          {/* Tag filter bar */}
+          <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:12,padding:"0 2px"}}>
+            <button onClick={()=>setSelectedTags([])}
+              style={{padding:"3px 10px",borderRadius:10,fontSize:10,fontWeight:600,letterSpacing:0.3,cursor:"pointer",
+                background:selectedTags.length===0?"rgba(42,107,191,0.15)":"transparent",
+                border:`1px solid ${selectedTags.length===0?"#2a6bbf":"#1a2d40"}`,
+                color:selectedTags.length===0?"#5a8abf":"#3a5a7a",transition:"all 0.15s"}}>
+              All
+            </button>
+            {tagStore.tags.map(tag => {
+              const active = selectedTags.includes(tag.id);
+              return (
+                <button key={tag.id}
+                  onClick={()=>toggleTagFilter(tag.id)}
+                  onContextMenu={e=>{e.preventDefault();setEditingTag({id:tag.id,name:tag.name});setShowManageTags(true);}}
+                  style={{padding:"3px 10px",borderRadius:10,fontSize:10,fontWeight:600,letterSpacing:0.3,cursor:"pointer",
+                    background:active?`${tag.color}20`:"transparent",
+                    border:`1px solid ${active?tag.color+"66":"#1a2d40"}`,
+                    color:active?tag.color:"#3a5a7a",transition:"all 0.15s"}}>
+                  {tag.name}
+                </button>
+              );
+            })}
+            {showTagInput ? (
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <input ref={tagInputRef} value={tagInput} onChange={e=>setTagInput(e.target.value)}
+                  onKeyDown={e=>{if(e.key==="Enter")handleCreateTag(tagInput);if(e.key==="Escape"){setShowTagInput(false);setTagInput("");}}}
+                  placeholder="Tag name"
+                  style={{background:"#080f1c",border:"1px solid #1a2d40",color:"#c8daf0",padding:"3px 8px",
+                    borderRadius:6,fontSize:10,outline:"none",width:90}}/>
+                <span onClick={()=>handleCreateTag(tagInput)}
+                  style={{color:"#4ade80",fontSize:12,cursor:"pointer",fontWeight:700}}>+</span>
+                <span onClick={()=>{setShowTagInput(false);setTagInput("");}}
+                  style={{color:"#3a5a7a",fontSize:12,cursor:"pointer"}}>\u00d7</span>
+              </div>
+            ) : (
+              <button onClick={()=>setShowTagInput(true)}
+                style={{padding:"3px 8px",borderRadius:10,fontSize:10,cursor:"pointer",
+                  background:"transparent",border:"1px dashed #1a2d40",color:"#2a4060"}}>
+                + Tag
+              </button>
+            )}
+            {tagStore.tags.length > 0 && (
+              <span onClick={()=>setShowManageTags(!showManageTags)}
+                style={{color:"#2a4060",fontSize:10,cursor:"pointer",marginLeft:4,textDecoration:"underline",
+                  textDecorationColor:"#1a2d40"}}>
+                Manage
+              </span>
+            )}
+          </div>
+
+          {/* Suggested tags (shown when no tags exist) */}
+          {hasNoTags && watchlist.length > 0 && (
+            <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:12,padding:"0 2px"}}>
+              <span style={{color:"#2a3a4a",fontSize:10}}>Suggested:</span>
+              {suggestedTags.map(name => (
+                <button key={name} onClick={()=>{createTag(name);setTagStore(getTagStore());}}
+                  style={{padding:"2px 8px",borderRadius:8,fontSize:9,cursor:"pointer",
+                    background:"transparent",border:"1px dashed #1a2d4066",color:"#3a5a7a",transition:"all 0.15s"}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor="#2a5a8a";e.currentTarget.style.color="#5a8abf";}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor="#1a2d4066";e.currentTarget.style.color="#3a5a7a";}}>
+                  {name}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Tag management panel */}
+          {showManageTags && tagStore.tags.length > 0 && (
+            <div style={{marginBottom:12,padding:10,background:"#080f1c",borderRadius:8,border:"1px solid #1a2d40"}}>
+              <div style={{...SECTION_TITLE,fontSize:10,marginBottom:8}}>MANAGE TAGS</div>
+              <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                {tagStore.tags.map(tag => (
+                  <div key={tag.id} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 6px"}}>
+                    <span style={{width:10,height:10,borderRadius:"50%",background:tag.color,flexShrink:0}}/>
+                    {editingTag?.id === tag.id ? (
+                      <input ref={renameInputRef} defaultValue={editingTag.name}
+                        onKeyDown={e=>{if(e.key==="Enter")handleRenameTag(tag.id,e.target.value);if(e.key==="Escape")setEditingTag(null);}}
+                        onBlur={e=>handleRenameTag(tag.id,e.target.value)}
+                        style={{background:"#0b1420",border:"1px solid #1a2d40",color:"#c8daf0",padding:"2px 6px",
+                          borderRadius:4,fontSize:11,outline:"none",flex:1}}/>
+                    ) : (
+                      <span style={{color:"#c8daf0",fontSize:11,flex:1}}>{tag.name}</span>
+                    )}
+                    <span onClick={()=>setEditingTag({id:tag.id,name:tag.name})}
+                      style={{color:"#3a5a7a",fontSize:10,cursor:"pointer"}}>Rename</span>
+                    <span onClick={()=>handleDeleteTag(tag.id)}
+                      style={{color:"#f87171",fontSize:10,cursor:"pointer"}}>Delete</span>
+                  </div>
+                ))}
+              </div>
+              <div onClick={()=>setShowManageTags(false)}
+                style={{marginTop:6,textAlign:"right",color:"#3a5a7a",fontSize:10,cursor:"pointer"}}>Close</div>
+            </div>
+          )}
+
           <div style={{display:"flex",flexDirection:"column",gap:4}}>
             {/* Header row */}
             <div style={{display:"grid",gridTemplateColumns:"80px 1fr 100px 90px 90px 80px 40px",gap:12,padding:"0 14px 8px",borderBottom:"1px solid #0c1824"}}>
@@ -684,12 +968,13 @@ function WatchlistView() {
               <span style={{color:"#1e3050",fontSize:10,letterSpacing:1}}>UPDATED</span>
               <span/>
             </div>
-            {watchlist.map(sym => {
+            {filteredWatchlist.map(sym => {
               const td = tickerData[sym];
               const hasFactors = td?.factors?.length > 0;
               const comp = hasFactors ? computeComposite(td.factors) : null;
               const sm = comp ? SIGNAL_META[comp.signal] : null;
               const filing10k = td?.filing?.signal10k;
+              const tickerTags = getTickerTags(sym);
               return (
                 <div key={sym} onClick={()=>navigate(`/ticker/${sym}`)}
                   style={{display:"grid",gridTemplateColumns:"80px 1fr 100px 90px 90px 80px 40px",gap:12,
@@ -697,21 +982,35 @@ function WatchlistView() {
                     border:"1px solid #1a2d40",transition:"background 0.15s",alignItems:"center"}}
                   onMouseEnter={e=>e.currentTarget.style.background="#0d1828"}
                   onMouseLeave={e=>e.currentTarget.style.background="#080f1c"}>
-                  <span style={{color:"#c8daf0",fontSize:15,fontWeight:800,letterSpacing:1}}>{sym}</span>
-                  <span style={{color:"#5a7a9a",fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{td?.companyName || "—"}</span>
+                  <span style={{display:"flex",alignItems:"center",gap:2}}>
+                    <span style={{color:"#c8daf0",fontSize:15,fontWeight:800,letterSpacing:1}}>{sym}</span>
+                    <SignalChangeBadge ticker={sym} />
+                  </span>
+                  <span style={{display:"flex",alignItems:"center",gap:4,overflow:"hidden"}}>
+                    <span style={{color:"#5a7a9a",fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{td?.companyName || "\u2014"}</span>
+                    {tickerTags.map(tag => <TagPill key={tag.id} tag={tag} small />)}
+                    <span onClick={e=>{e.stopPropagation();setTagDropdown(tagDropdown===sym?null:sym);}}
+                      style={{position:"relative",color:"#2a4060",fontSize:10,cursor:"pointer",flexShrink:0,padding:"1px 4px",
+                        borderRadius:4,border:"1px solid transparent"}}
+                      onMouseEnter={e=>e.currentTarget.style.borderColor="#1a2d40"}
+                      onMouseLeave={e=>e.currentTarget.style.borderColor="transparent"}>
+                      +tag
+                      {tagDropdown === sym && <TagAssignDropdown ticker={sym} onClose={()=>setTagDropdown(null)} />}
+                    </span>
+                  </span>
                   {sm ? (
                     <span style={{textAlign:"center",padding:"3px 8px",borderRadius:5,background:`${sm.color}18`,border:`1px solid ${sm.color}44`,color:sm.color,fontSize:11,fontWeight:700,letterSpacing:.5}}>{comp.signal}</span>
                   ) : (
                     <span style={{color:"#2a3a4a",fontSize:11,textAlign:"center"}}>Not evaluated</span>
                   )}
-                  <span style={{color:sm?.color||"#2a3a4a",fontSize:13,fontWeight:600}}>{comp ? (comp.composite>0?"+":"") + comp.composite.toFixed(3) : "—"}</span>
+                  <span style={{color:sm?.color||"#2a3a4a",fontSize:13,fontWeight:600}}>{comp ? (comp.composite>0?"+":"") + comp.composite.toFixed(3) : "\u2014"}</span>
                   {filing10k ? (
                     <span style={{textAlign:"center",padding:"2px 6px",borderRadius:5,background:`${filing10k.color}18`,border:`1px solid ${filing10k.color}44`,color:filing10k.color,fontSize:10,fontWeight:700}}>{filing10k.badge}</span>
                   ) : (
-                    <span style={{color:"#2a3a4a",fontSize:11,textAlign:"center"}}>—</span>
+                    <span style={{color:"#2a3a4a",fontSize:11,textAlign:"center"}}>\u2014</span>
                   )}
                   <span style={{color:"#2a3a4a",fontSize:11}}>{formatAge(td?.lastUpdated)}</span>
-                  <span onClick={e=>{e.stopPropagation();handleRemove(sym);}} style={{color:"#2a4060",fontSize:14,cursor:"pointer",textAlign:"center",borderRadius:4,padding:"2px"}}>✕</span>
+                  <span onClick={e=>{e.stopPropagation();handleRemove(sym);}} style={{color:"#2a4060",fontSize:14,cursor:"pointer",textAlign:"center",borderRadius:4,padding:"2px"}}>\u2715</span>
                 </div>
               );
             })}
@@ -742,24 +1041,48 @@ function WatchlistView() {
             </div>
             {sortedBatchResults.map(r => {
               const sm = r.signal !== "ERROR" ? SIGNAL_META[r.signal] : null;
+              const change = batchSignalChanges[r.ticker];
+              const rowBorderColor = change
+                ? change.direction === "upgrade" ? "rgba(74,222,128,0.35)"
+                : change.direction === "downgrade" ? "rgba(248,113,113,0.35)"
+                : "rgba(250,204,21,0.25)"
+                : "#1a2d40";
+              const rowBg = change
+                ? change.direction === "upgrade" ? "rgba(74,222,128,0.04)"
+                : change.direction === "downgrade" ? "rgba(248,113,113,0.04)"
+                : "rgba(250,204,21,0.03)"
+                : "#080f1c";
+              const hoverBg = change
+                ? change.direction === "upgrade" ? "rgba(74,222,128,0.08)"
+                : change.direction === "downgrade" ? "rgba(248,113,113,0.08)"
+                : "rgba(250,204,21,0.06)"
+                : "#0d1828";
               return (
                 <div key={r.ticker} onClick={()=>navigate(`/ticker/${r.ticker}`)}
+                  title={change ? `${change.previousSignal} \u2192 ${change.currentSignal}` : ""}
                   style={{display:"grid",gridTemplateColumns:"80px 1fr 100px 100px 80px 80px",gap:12,
-                    padding:"10px 14px",borderRadius:8,cursor:"pointer",background:"#080f1c",
-                    border:"1px solid #1a2d40",transition:"background 0.15s",alignItems:"center"}}
-                  onMouseEnter={e=>e.currentTarget.style.background="#0d1828"}
-                  onMouseLeave={e=>e.currentTarget.style.background="#080f1c"}>
-                  <span style={{color:"#c8daf0",fontSize:14,fontWeight:800,letterSpacing:1}}>{r.ticker}</span>
-                  <span style={{color:"#5a7a9a",fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.companyName || "—"}</span>
+                    padding:"10px 14px",borderRadius:8,cursor:"pointer",background:rowBg,
+                    borderLeft:change?`3px solid ${rowBorderColor}`:"3px solid transparent",
+                    border:`1px solid ${rowBorderColor}`,transition:"background 0.15s",alignItems:"center"}}
+                  onMouseEnter={e=>e.currentTarget.style.background=hoverBg}
+                  onMouseLeave={e=>e.currentTarget.style.background=rowBg}>
+                  <span style={{display:"flex",alignItems:"center",gap:2}}>
+                    <span style={{color:"#c8daf0",fontSize:14,fontWeight:800,letterSpacing:1}}>{r.ticker}</span>
+                    {change && (
+                      <span style={{color:change.direction==="upgrade"?"#4ade80":change.direction==="downgrade"?"#f87171":"#facc15",
+                        fontSize:10,fontWeight:700}}>{change.direction==="upgrade"?"\u2191":change.direction==="downgrade"?"\u2193":"\u2022"}</span>
+                    )}
+                  </span>
+                  <span style={{color:"#5a7a9a",fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.companyName || "\u2014"}</span>
                   {sm ? (
                     <span style={{textAlign:"center",padding:"3px 8px",borderRadius:5,background:`${sm.color}18`,border:`1px solid ${sm.color}44`,color:sm.color,fontSize:11,fontWeight:700,letterSpacing:.5}}>{r.signal}</span>
                   ) : (
                     <span style={{textAlign:"center",padding:"3px 8px",borderRadius:5,background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.3)",color:"#f87171",fontSize:11,fontWeight:700}}>ERROR</span>
                   )}
                   <span style={{color:sm?.color||"#f87171",fontSize:13,fontWeight:600}}>
-                    {r.compositeScore !== null ? (r.compositeScore > 0 ? "+" : "") + r.compositeScore.toFixed(3) : r.error ? r.error.slice(0, 20) : "—"}
+                    {r.compositeScore !== null ? (r.compositeScore > 0 ? "+" : "") + r.compositeScore.toFixed(3) : r.error ? r.error.slice(0, 20) : "\u2014"}
                   </span>
-                  <span style={{color:"#5a7a9a",fontSize:12}}>{r.confidence !== null ? r.confidence + "%" : "—"}</span>
+                  <span style={{color:"#5a7a9a",fontSize:12}}>{r.confidence !== null ? r.confidence + "%" : "\u2014"}</span>
                   <span style={{fontSize:10,padding:"2px 6px",borderRadius:4,
                     background: r.fromCache ? "rgba(74,222,128,0.08)" : "rgba(42,107,191,0.08)",
                     border: `1px solid ${r.fromCache ? "rgba(74,222,128,0.25)" : "rgba(42,107,191,0.25)"}`,
@@ -858,6 +1181,16 @@ function AssetProfileView({ ticker }) {
       };
       saveTickerData(ticker, updated);
       setData(getTickerData(ticker));
+
+      // Record signal for change tracking
+      if (result.signal && result.signal !== "ERROR") {
+        recordSignal(ticker, {
+          signal: result.signal,
+          compositeScore: result.composite,
+          confidence: result.confidence,
+          evaluatedAt: new Date().toISOString(),
+        });
+      }
     } catch (err) {
       setError(err.message);
     } finally {
