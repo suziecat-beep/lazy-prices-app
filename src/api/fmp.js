@@ -1,20 +1,35 @@
 // ══════════════════════════════════════════════════════════════════════════════
 // FMP API CLIENT — routes through /api/fmp-proxy (Vercel serverless function)
 // so the API key never touches the browser.
+// Integrates with localStorage caching layer (24h TTL) to conserve API calls.
 // ══════════════════════════════════════════════════════════════════════════════
+
+import { getCached, setCache } from "../services/apiCache.js";
 
 export class FMPClient {
   constructor() {
     this._cache = new Map();
     this.callCount = 0;
+    this.cacheHits = 0;
   }
 
   async fetch(endpoint, params = {}) {
     const cacheKey = endpoint + "|" + JSON.stringify(params);
+
+    // 1. Check in-memory session cache (instant)
     if (this._cache.has(cacheKey)) {
       return this._cache.get(cacheKey);
     }
 
+    // 2. Check localStorage persistent cache (survives refresh, 24h TTL)
+    const persisted = getCached(endpoint, params);
+    if (persisted) {
+      this._cache.set(cacheKey, persisted);
+      this.cacheHits++;
+      return persisted;
+    }
+
+    // 3. Cache miss — make the actual API call
     const url = new URL("/api/fmp-proxy", window.location.origin);
     url.searchParams.set("endpoint", endpoint);
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
@@ -50,7 +65,10 @@ export class FMPClient {
       throw new Error(data["Error Message"]);
     }
 
+    // Store in both caches
     this._cache.set(cacheKey, data);
+    setCache(endpoint, params, data);
+
     return data;
   }
 
