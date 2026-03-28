@@ -12,6 +12,8 @@ import {
   getWatchlist, addToWatchlist, removeFromWatchlist,
   getTickerData, saveTickerData,
 } from "./storage.js";
+import { clearAllCache, getCacheStats } from "./services/apiCache.js";
+import { batchEvaluate, loadBatchResults } from "./services/batchEvaluate.js";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // STOP WORDS & SENTIMENT (Loughran-McDonald)
@@ -537,12 +539,22 @@ function WatchlistView() {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState(null);
 
+  // Batch evaluate state
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState(null); // { current, total, ticker }
+  const [batchResults, setBatchResults] = useState(() => loadBatchResults());
+  const [sortCol, setSortCol] = useState("compositeScore");
+  const [sortAsc, setSortAsc] = useState(false);
+  // Refresh counter to force re-read of tickerData after batch
+  const [refreshKey, setRefreshKey] = useState(0);
+
   // Load cached data for all tickers
   const tickerData = useMemo(() => {
     const map = {};
     watchlist.forEach(t => { map[t] = getTickerData(t); });
     return map;
-  }, [watchlist]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchlist, refreshKey]);
 
   async function handleAdd() {
     const sym = input.toUpperCase().trim();
@@ -569,6 +581,47 @@ function WatchlistView() {
     const newList = removeFromWatchlist(sym);
     setWatchlist([...newList]);
   }
+
+  async function handleBatchEvaluate() {
+    setBatchRunning(true);
+    setBatchProgress({ current: 0, total: watchlist.length, ticker: "" });
+    try {
+      const results = await batchEvaluate(watchlist, (current, total, ticker) => {
+        setBatchProgress({ current, total, ticker });
+      });
+      setBatchResults({ results, completedAt: new Date().toISOString() });
+      setRefreshKey(k => k + 1);
+    } finally {
+      setBatchRunning(false);
+      setBatchProgress(null);
+    }
+  }
+
+  function handleSort(col) {
+    if (sortCol === col) setSortAsc(a => !a);
+    else { setSortCol(col); setSortAsc(false); }
+  }
+
+  // Sort batch results
+  const sortedBatchResults = useMemo(() => {
+    if (!batchResults?.results) return [];
+    // Filter to only tickers still on watchlist
+    const filtered = batchResults.results.filter(r => watchlist.includes(r.ticker));
+    return [...filtered].sort((a, b) => {
+      let va = a[sortCol], vb = b[sortCol];
+      if (va === null || va === undefined) va = sortAsc ? Infinity : -Infinity;
+      if (vb === null || vb === undefined) vb = sortAsc ? Infinity : -Infinity;
+      if (typeof va === "string") return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+      return sortAsc ? va - vb : vb - va;
+    });
+  }, [batchResults, sortCol, sortAsc, watchlist]);
+
+  const SORT_HEADER = (label, col) => (
+    <span onClick={() => handleSort(col)}
+      style={{color: sortCol === col ? "#5a8abf" : "#1e3050", fontSize:10, letterSpacing:1, cursor:"pointer", userSelect:"none"}}>
+      {label} {sortCol === col ? (sortAsc ? "\u25B2" : "\u25BC") : ""}
+    </span>
+  );
 
   return (
     <div style={{maxWidth:900,margin:"0 auto",padding:"24px 20px"}}>
@@ -598,7 +651,28 @@ function WatchlistView() {
         </div>
       ) : (
         <div style={CARD}>
-          <div style={{...SECTION_TITLE,marginBottom:14}}>WATCHLIST — {watchlist.length} TICKER{watchlist.length>1?"S":""}</div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:10}}>
+            <div style={SECTION_TITLE}>WATCHLIST — {watchlist.length} TICKER{watchlist.length>1?"S":""}</div>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              {batchProgress && (
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{width:120,height:4,background:"#0c1824",borderRadius:2,overflow:"hidden"}}>
+                    <div style={{width:`${(batchProgress.current/batchProgress.total)*100}%`,height:"100%",background:"#2a6bbf",borderRadius:2,transition:"width 0.3s"}}/>
+                  </div>
+                  <span style={{color:"#5a8abf",fontSize:11,animation:"pulse 1.5s infinite",whiteSpace:"nowrap"}}>
+                    {batchProgress.current}/{batchProgress.total} {batchProgress.ticker}
+                  </span>
+                </div>
+              )}
+              <button onClick={handleBatchEvaluate} disabled={batchRunning}
+                style={{background:batchRunning?"#0c1824":"#1a3a2a",border:`1px solid ${batchRunning?"#1a2d40":"#2a8a5a"}`,
+                  color:batchRunning?"#3a5a7a":"#4ade80",padding:"8px 18px",borderRadius:8,
+                  cursor:batchRunning?"default":"pointer",fontSize:12,fontWeight:700,letterSpacing:1,whiteSpace:"nowrap"}}>
+                {batchRunning ? "Evaluating..." : "Evaluate All"}
+              </button>
+            </div>
+          </div>
+
           <div style={{display:"flex",flexDirection:"column",gap:4}}>
             {/* Header row */}
             <div style={{display:"grid",gridTemplateColumns:"80px 1fr 100px 90px 90px 80px 40px",gap:12,padding:"0 14px 8px",borderBottom:"1px solid #0c1824"}}>
@@ -638,6 +712,60 @@ function WatchlistView() {
                   )}
                   <span style={{color:"#2a3a4a",fontSize:11}}>{formatAge(td?.lastUpdated)}</span>
                   <span onClick={e=>{e.stopPropagation();handleRemove(sym);}} style={{color:"#2a4060",fontSize:14,cursor:"pointer",textAlign:"center",borderRadius:4,padding:"2px"}}>✕</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Batch Results Table */}
+      {sortedBatchResults.length > 0 && !batchRunning && (
+        <div style={{...CARD,marginTop:20}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+            <div style={SECTION_TITLE}>BATCH RESULTS</div>
+            {batchResults?.completedAt && (
+              <span style={{color:"#2a3a4a",fontSize:11}}>
+                Evaluated {formatAge(new Date(batchResults.completedAt).getTime())}
+              </span>
+            )}
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {/* Sortable header */}
+            <div style={{display:"grid",gridTemplateColumns:"80px 1fr 100px 100px 80px 80px",gap:12,padding:"0 14px 8px",borderBottom:"1px solid #0c1824"}}>
+              {SORT_HEADER("TICKER", "ticker")}
+              {SORT_HEADER("COMPANY", "companyName")}
+              {SORT_HEADER("SIGNAL", "signal")}
+              {SORT_HEADER("COMPOSITE", "compositeScore")}
+              {SORT_HEADER("CONFIDENCE", "confidence")}
+              {SORT_HEADER("CACHE", "fromCache")}
+            </div>
+            {sortedBatchResults.map(r => {
+              const sm = r.signal !== "ERROR" ? SIGNAL_META[r.signal] : null;
+              return (
+                <div key={r.ticker} onClick={()=>navigate(`/ticker/${r.ticker}`)}
+                  style={{display:"grid",gridTemplateColumns:"80px 1fr 100px 100px 80px 80px",gap:12,
+                    padding:"10px 14px",borderRadius:8,cursor:"pointer",background:"#080f1c",
+                    border:"1px solid #1a2d40",transition:"background 0.15s",alignItems:"center"}}
+                  onMouseEnter={e=>e.currentTarget.style.background="#0d1828"}
+                  onMouseLeave={e=>e.currentTarget.style.background="#080f1c"}>
+                  <span style={{color:"#c8daf0",fontSize:14,fontWeight:800,letterSpacing:1}}>{r.ticker}</span>
+                  <span style={{color:"#5a7a9a",fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.companyName || "—"}</span>
+                  {sm ? (
+                    <span style={{textAlign:"center",padding:"3px 8px",borderRadius:5,background:`${sm.color}18`,border:`1px solid ${sm.color}44`,color:sm.color,fontSize:11,fontWeight:700,letterSpacing:.5}}>{r.signal}</span>
+                  ) : (
+                    <span style={{textAlign:"center",padding:"3px 8px",borderRadius:5,background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.3)",color:"#f87171",fontSize:11,fontWeight:700}}>ERROR</span>
+                  )}
+                  <span style={{color:sm?.color||"#f87171",fontSize:13,fontWeight:600}}>
+                    {r.compositeScore !== null ? (r.compositeScore > 0 ? "+" : "") + r.compositeScore.toFixed(3) : r.error ? r.error.slice(0, 20) : "—"}
+                  </span>
+                  <span style={{color:"#5a7a9a",fontSize:12}}>{r.confidence !== null ? r.confidence + "%" : "—"}</span>
+                  <span style={{fontSize:10,padding:"2px 6px",borderRadius:4,
+                    background: r.fromCache ? "rgba(74,222,128,0.08)" : "rgba(42,107,191,0.08)",
+                    border: `1px solid ${r.fromCache ? "rgba(74,222,128,0.25)" : "rgba(42,107,191,0.25)"}`,
+                    color: r.fromCache ? "#4ade80" : "#5a8abf", textAlign:"center"}}>
+                    {r.fromCache ? "Cached" : "Fresh"}
+                  </span>
                 </div>
               );
             })}
@@ -724,6 +852,8 @@ function AssetProfileView({ ticker }) {
         price: result.price,
         factors: result.factors,
         apiCallCount: result.apiCallCount,
+        cacheHits: result.cacheHits,
+        fromCache: result.fromCache,
         filing: { docs: filingDocs, signal10k: filingResult?.signal10k || null },
       };
       saveTickerData(ticker, updated);
@@ -803,9 +933,17 @@ function AssetProfileView({ ticker }) {
               {loading ? "Evaluating..." : hasEvaluated ? "Refresh" : "Evaluate"}
             </button>
             {hasEvaluated && (
-              <span style={{color:"#2a3a4a",fontSize:11}}>
-                {composite.factorCount}/{composite.totalFactors} factors &middot; Updated {formatAge(data?.lastUpdated)}
-              </span>
+              <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
+                <span style={{color:"#2a3a4a",fontSize:11}}>
+                  {composite.factorCount}/{composite.totalFactors} factors &middot; Updated {formatAge(data?.lastUpdated)}
+                </span>
+                <span style={{fontSize:10,padding:"2px 8px",borderRadius:4,
+                  background: data?.fromCache ? "rgba(74,222,128,0.08)" : "rgba(42,107,191,0.08)",
+                  border: `1px solid ${data?.fromCache ? "rgba(74,222,128,0.25)" : "rgba(42,107,191,0.25)"}`,
+                  color: data?.fromCache ? "#4ade80" : "#5a8abf"}}>
+                  {data?.fromCache ? "Cached" : `${data?.cacheHits || 0} cache hits / ${data?.apiCallCount || 0} API calls`}
+                </span>
+              </div>
             )}
           </div>
         </div>
@@ -976,6 +1114,39 @@ function AssetProfileView({ ticker }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// CACHE FOOTER — Clear cache button + stats
+// ══════════════════════════════════════════════════════════════════════════════
+
+function CacheFooter() {
+  const [stats, setStats] = useState(() => getCacheStats());
+
+  function handleClear() {
+    clearAllCache();
+    setStats(getCacheStats());
+  }
+
+  return (
+    <div style={{marginTop:36,textAlign:"center",padding:"0 20px"}}>
+      <div style={{color:"#0c1624",fontSize:11,letterSpacing:1,marginBottom:12}}>
+        LAZY PRICES &middot; NBER WP 25084 &middot; 5 FACTORS + 10-K SIMILARITY
+      </div>
+      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+        <span style={{color:"#1e3050",fontSize:11}}>
+          API Cache: {stats.entryCount} entries ({stats.totalSizeKB} KB)
+        </span>
+        {stats.entryCount > 0 && (
+          <button onClick={handleClear}
+            style={{background:"#0b1420",border:"1px solid #1a2d40",color:"#3a5a7a",
+              padding:"5px 14px",borderRadius:6,cursor:"pointer",fontSize:11,letterSpacing:0.5}}>
+            Clear Cache
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // MAIN APP — router + API key gate
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -1008,9 +1179,7 @@ export default function App() {
         : <WatchlistView />
       }
 
-      <div style={{marginTop:36,textAlign:"center",color:"#0c1624",fontSize:11,letterSpacing:1}}>
-        LAZY PRICES &middot; NBER WP 25084 &middot; 5 FACTORS + 10-K SIMILARITY
-      </div>
+      <CacheFooter />
     </div>
   );
 }
