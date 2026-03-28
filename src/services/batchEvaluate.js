@@ -5,6 +5,7 @@
 
 import { evaluateTicker } from "../engine/scoring.js";
 import { saveTickerData, getTickerData } from "../storage.js";
+import { recordSignal } from "./signalHistory.js";
 
 const BATCH_KEY = "batch_results";
 
@@ -12,10 +13,11 @@ const BATCH_KEY = "batch_results";
  * Evaluate all tickers sequentially.
  * @param {string[]} tickers
  * @param {(current: number, total: number, ticker: string) => void} onProgress
- * @returns {Promise<Array<{ ticker, signal, compositeScore, confidence, fromCache, evaluatedAt, error? }>>}
+ * @returns {Promise<{ results: Array<{ ticker, signal, compositeScore, confidence, fromCache, evaluatedAt, error? }>, signalChanges: Array }>}
  */
 export async function batchEvaluate(tickers, onProgress) {
   const results = [];
+  const signalChanges = [];
 
   for (let i = 0; i < tickers.length; i++) {
     const ticker = tickers[i];
@@ -38,6 +40,7 @@ export async function batchEvaluate(tickers, onProgress) {
         filing: existing?.filing || null,
       });
 
+      const evaluatedAt = new Date().toISOString();
       results.push({
         ticker: evaluation.ticker,
         companyName: evaluation.companyName,
@@ -45,8 +48,19 @@ export async function batchEvaluate(tickers, onProgress) {
         compositeScore: evaluation.composite,
         confidence: evaluation.confidence,
         fromCache: evaluation.fromCache,
-        evaluatedAt: new Date().toISOString(),
+        evaluatedAt,
       });
+
+      // Record signal and track changes
+      if (evaluation.signal && evaluation.signal !== "ERROR") {
+        const change = recordSignal(evaluation.ticker, {
+          signal: evaluation.signal,
+          compositeScore: evaluation.composite,
+          confidence: evaluation.confidence,
+          evaluatedAt,
+        });
+        if (change) signalChanges.push(change);
+      }
     } catch (err) {
       results.push({
         ticker,
@@ -69,11 +83,12 @@ export async function batchEvaluate(tickers, onProgress) {
   // Persist batch results
   const batch = {
     results,
+    signalChanges,
     completedAt: new Date().toISOString(),
   };
   localStorage.setItem(BATCH_KEY, JSON.stringify(batch));
 
-  return results;
+  return { results, signalChanges };
 }
 
 /**
