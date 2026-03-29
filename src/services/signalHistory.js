@@ -25,7 +25,7 @@ export function getSignalHistory(ticker) {
  * Record a new signal evaluation for a ticker.
  * Returns a SignalChange object if the signal changed from the previous entry, null otherwise.
  * @param {string} ticker
- * @param {{ signal: string, compositeScore: number, confidence: number, evaluatedAt: string }} entry
+ * @param {{ signal: string, compositeScore: number, confidence: number, evaluatedAt: string, factors?: Record<string, number> }} entry
  * @returns {{ ticker: string, previousSignal: string, currentSignal: string, changedAt: string, direction: string } | null}
  */
 export function recordSignal(ticker, entry) {
