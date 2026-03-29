@@ -51,13 +51,20 @@ export async function batchEvaluate(tickers, onProgress) {
         evaluatedAt,
       });
 
-      // Record signal and track changes
+      // Record signal and track changes (include factor breakdown for history chart)
       if (evaluation.signal && evaluation.signal !== "ERROR") {
+        const factors = {};
+        for (const f of evaluation.factors) {
+          if (f.score !== null && f.score !== undefined && f.signal !== "ERROR") {
+            factors[f.name] = f.score;
+          }
+        }
         const change = recordSignal(evaluation.ticker, {
           signal: evaluation.signal,
           compositeScore: evaluation.composite,
           confidence: evaluation.confidence,
           evaluatedAt,
+          factors,
         });
         if (change) signalChanges.push(change);
       }
