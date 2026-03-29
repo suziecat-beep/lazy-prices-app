@@ -4,6 +4,11 @@ import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
+import {
+  LineChart, Line, XAxis, YAxis, ReferenceLine, ReferenceArea,
+  Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
+} from "recharts";
+
 import { evaluateTicker, computeComposite } from "./engine/scoring.js";
 import { CONFIG, similarityToFactorScore } from "./config.js";
 import { scoreToSignal } from "./factors/factor-base.js";
@@ -14,11 +19,12 @@ import {
 } from "./storage.js";
 import { clearAllCache, getCacheStats } from "./services/apiCache.js";
 import { batchEvaluate, loadBatchResults } from "./services/batchEvaluate.js";
-import { recordSignal, getRecentChanges, getLastSignalChange } from "./services/signalHistory.js";
+import { recordSignal, getSignalHistory, getRecentChanges, getLastSignalChange } from "./services/signalHistory.js";
 import {
   getTagStore, createTag, deleteTag, renameTag,
   assignTag, removeTagFromTicker, getTickerTags, getDefaultSuggestedTags,
 } from "./services/watchlistTags.js";
+import { FACTOR_METHODOLOGIES, FACTOR_COLORS } from "./data/factorMethodologies.js";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // STOP WORDS & SENTIMENT (Loughran-McDonald)
@@ -243,6 +249,222 @@ function ScoreBar({ score }) {
         <div style={{width:`${pct}%`,height:"100%",background:color,borderRadius:3,transition:"width 0.4s"}}/>
       </div>
       <span style={{color,fontSize:12,fontWeight:600,minWidth:40}}>{score > 0 ? "+" : ""}{score.toFixed(2)}</span>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FACTOR TOOLTIP — hover/tap popover explaining factor methodology
+// ══════════════════════════════════════════════════════════════════════════════
+
+function FactorTooltip({ factorKey, children }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState("below");
+  const triggerRef = useRef(null);
+  const tipRef = useRef(null);
+  const method = FACTOR_METHODOLOGIES[factorKey];
+  if (!method) return children;
+
+  function handleEnter() {
+    setOpen(true);
+    // Decide position based on viewport space
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setPos(rect.top > 280 ? "above" : "below");
+    }
+  }
+
+  return (
+    <span ref={triggerRef} style={{position:"relative",display:"inline-flex",alignItems:"center",gap:3}}
+      onMouseEnter={handleEnter} onMouseLeave={()=>setOpen(false)}
+      onClick={()=>setOpen(o=>!o)}>
+      {children}
+      <span style={{color:"#3a5a7a",fontSize:10,cursor:"help",lineHeight:1,flexShrink:0}}>&#9432;</span>
+      {open && (
+        <div ref={tipRef} onClick={e=>e.stopPropagation()}
+          style={{
+            position:"absolute",left:0,zIndex:200,
+            [pos==="above"?"bottom":"top"]:"calc(100% + 8px)",
+            background:"#0b1420",border:"1px solid #1a2d40",borderRadius:10,
+            padding:"14px 16px",width:320,boxShadow:"0 8px 32px rgba(0,0,0,0.5)",
+            animation:"fadeIn 0.15s ease both",
+          }}>
+          <div style={{color:"#c8daf0",fontSize:13,fontWeight:700,marginBottom:8}}>{method.displayName}</div>
+          <div style={{marginBottom:8}}>
+            <div style={{color:"#5a8abf",fontSize:10,letterSpacing:0.5,fontWeight:700,marginBottom:3}}>WHAT IT MEASURES</div>
+            <div style={{color:"#7a9abf",fontSize:11,lineHeight:1.5}}>{method.whatItMeasures}</div>
+          </div>
+          <div style={{marginBottom:8}}>
+            <div style={{color:"#5a8abf",fontSize:10,letterSpacing:0.5,fontWeight:700,marginBottom:3}}>WHY IT MATTERS</div>
+            <div style={{color:"#7a9abf",fontSize:11,lineHeight:1.5}}>{method.whyItMatters}</div>
+          </div>
+          <div>
+            <div style={{color:"#5a8abf",fontSize:10,letterSpacing:0.5,fontWeight:700,marginBottom:3}}>SCORING</div>
+            <div style={{color:"#5a7a9a",fontSize:11,lineHeight:1.5}}>{method.scoring}</div>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE HISTORY CHART — Recharts line chart for composite + factor trends
+// ══════════════════════════════════════════════════════════════════════════════
+
+function getScoreTrend(history) {
+  const recent = history.slice(-5);
+  if (recent.length < 2) return "stable";
+  const first = recent[0].compositeScore;
+  const last = recent[recent.length - 1].compositeScore;
+  const delta = last - first;
+  if (delta > 0.05) return "improving";
+  if (delta < -0.05) return "declining";
+  return "stable";
+}
+
+const TREND_DISPLAY = {
+  improving: { icon: "\u2191", label: "Improving", color: "#4ade80" },
+  declining: { icon: "\u2193", label: "Declining", color: "#f87171" },
+  stable:    { icon: "\u2192", label: "Stable",    color: "#facc15" },
+};
+
+function ScoreHistoryChart({ ticker }) {
+  const history = useMemo(() => getSignalHistory(ticker), [ticker]);
+  const [visibleFactors, setVisibleFactors] = useState({});
+
+  if (history.length < 2) {
+    return (
+      <div style={{...CARD,marginBottom:20}}>
+        <div style={{...SECTION_TITLE,marginBottom:12}}>SCORE HISTORY</div>
+        <div style={{color:"#3a5a7a",fontSize:13,textAlign:"center",padding:"28px 0"}}>
+          Evaluate this ticker multiple times to see score trends
+        </div>
+      </div>
+    );
+  }
+
+  // Collect all factor names that appear across history
+  const allFactorNames = useMemo(() => {
+    const names = new Set();
+    for (const entry of history) {
+      if (entry.factors) {
+        for (const k of Object.keys(entry.factors)) names.add(k);
+      }
+    }
+    return [...names];
+  }, [history]);
+
+  // Format chart data
+  const chartData = useMemo(() => {
+    return history.map(entry => {
+      const d = new Date(entry.evaluatedAt);
+      const now = new Date();
+      const label = d.getFullYear() === now.getFullYear()
+        ? `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`
+        : `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}/${String(d.getFullYear()).slice(-2)}`;
+      const point = { date: label, fullDate: entry.evaluatedAt, composite: entry.compositeScore };
+      if (entry.factors) {
+        for (const [name, score] of Object.entries(entry.factors)) {
+          point[name] = score;
+        }
+      }
+      return point;
+    });
+  }, [history]);
+
+  const trend = getScoreTrend(history);
+  const td = TREND_DISPLAY[trend];
+
+  function toggleFactor(name) {
+    setVisibleFactors(v => ({...v, [name]: !v[name]}));
+  }
+
+  // Custom tooltip
+  function ChartTooltipContent({ active, payload, label }) {
+    if (!active || !payload?.length) return null;
+    return (
+      <div style={{background:"#0b1420",border:"1px solid #1a2d40",borderRadius:8,padding:"10px 14px",
+        boxShadow:"0 4px 16px rgba(0,0,0,0.4)",maxWidth:260}}>
+        <div style={{color:"#c8daf0",fontSize:11,fontWeight:700,marginBottom:6}}>{label}</div>
+        {payload.map(p => (
+          <div key={p.dataKey} style={{display:"flex",justifyContent:"space-between",gap:12,marginBottom:2}}>
+            <span style={{color:p.color || "#c8daf0",fontSize:11}}>
+              {p.dataKey === "composite" ? "Composite" : (FACTOR_METHODOLOGIES[p.dataKey]?.displayName || p.dataKey)}
+            </span>
+            <span style={{color:p.color || "#c8daf0",fontSize:11,fontWeight:600}}>
+              {p.value > 0 ? "+" : ""}{p.value?.toFixed(3)}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{...CARD,marginBottom:20}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
+        <div style={SECTION_TITLE}>SCORE HISTORY</div>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <span style={{color:"#3a5a7a",fontSize:11}}>Score trend:</span>
+          <span style={{color:td.color,fontSize:12,fontWeight:700}}>{td.icon} {td.label}</span>
+        </div>
+      </div>
+
+      <ResponsiveContainer width="100%" height={300}>
+        <LineChart data={chartData} margin={{top:8,right:12,left:-10,bottom:4}}>
+          <XAxis dataKey="date" tick={{fill:"#3a5a7a",fontSize:10}} axisLine={{stroke:"#1a2d40"}} tickLine={false} />
+          <YAxis domain={[-1,1]} ticks={[-1,-0.5,-0.25,0,0.25,0.5,1]}
+            tick={{fill:"#3a5a7a",fontSize:10}} axisLine={{stroke:"#1a2d40"}} tickLine={false}
+            tickFormatter={v=>v>0?`+${v}`:String(v)} />
+          {/* Threshold shading */}
+          <ReferenceArea y1={0.25} y2={1} fill="#4ade80" fillOpacity={0.04} />
+          <ReferenceArea y1={-1} y2={-0.25} fill="#f87171" fillOpacity={0.04} />
+          {/* Threshold lines */}
+          <ReferenceLine y={0.25} stroke="#4ade80" strokeDasharray="6 4" strokeOpacity={0.5}
+            label={{value:"BUY",fill:"#4ade80",fontSize:9,position:"right"}} />
+          <ReferenceLine y={-0.25} stroke="#f87171" strokeDasharray="6 4" strokeOpacity={0.5}
+            label={{value:"SELL",fill:"#f87171",fontSize:9,position:"right"}} />
+          <ReferenceLine y={0} stroke="#1a2d40" strokeDasharray="3 3" />
+          <RechartsTooltip content={<ChartTooltipContent />} cursor={{stroke:"#1a2d4080"}} />
+          {/* Composite line (primary) */}
+          <Line type="monotone" dataKey="composite" stroke="#c8daf0" strokeWidth={2.5}
+            dot={{r:3,fill:"#c8daf0",strokeWidth:0}} activeDot={{r:5,fill:"#c8daf0"}} />
+          {/* Factor lines (toggled) */}
+          {allFactorNames.map(name => visibleFactors[name] && (
+            <Line key={name} type="monotone" dataKey={name}
+              stroke={FACTOR_COLORS[name] || "#5a7a9a"} strokeWidth={1.5} strokeDasharray="5 3"
+              strokeOpacity={0.7} dot={false} connectNulls />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+
+      {/* Factor toggle legend */}
+      {allFactorNames.length > 0 && (
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:10,paddingTop:10,borderTop:"1px solid #0c1824"}}>
+          {allFactorNames.map(name => {
+            const active = !!visibleFactors[name];
+            const color = FACTOR_COLORS[name] || "#5a7a9a";
+            const displayName = FACTOR_METHODOLOGIES[name]?.displayName || name;
+            return (
+              <FactorTooltip key={name} factorKey={name}>
+                <label onClick={e=>e.stopPropagation()}
+                  style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 8px",borderRadius:6,
+                    cursor:"pointer",fontSize:10,fontWeight:600,letterSpacing:0.3,
+                    background:active?`${color}18`:"transparent",border:`1px solid ${active?color+"55":"#1a2d40"}`,
+                    color:active?color:"#3a5a7a",transition:"all 0.15s",userSelect:"none"}}
+                  onMouseEnter={e=>{if(!active)e.currentTarget.style.borderColor=color+"44";}}
+                  onMouseLeave={e=>{if(!active)e.currentTarget.style.borderColor="#1a2d40";}}>
+                  <input type="checkbox" checked={active} onChange={()=>toggleFactor(name)}
+                    style={{display:"none"}} />
+                  <span style={{width:8,height:8,borderRadius:"50%",background:active?color:`${color}44`,flexShrink:0}} />
+                  {displayName}
+                </label>
+              </FactorTooltip>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -500,7 +722,9 @@ function FactorRow({ factor, expanded, onToggle }) {
         padding:"10px 14px",background:expanded?"#0d1828":"#080f1c",
         borderRadius:expanded?"8px 8px 0 0":8,border:"1px solid #1a2d40",cursor:"pointer",transition:"background 0.15s"}}>
         <div>
-          <div style={{color:"#c8daf0",fontSize:13,fontWeight:600}}>{factor.name}</div>
+          <div style={{color:"#c8daf0",fontSize:13,fontWeight:600}}>
+            <FactorTooltip factorKey={factor.name}><span>{factor.name}</span></FactorTooltip>
+          </div>
           <div style={{color:"#3a5a7a",fontSize:11,marginTop:2}}>{getKeyDetail(factor)}</div>
         </div>
         <ScoreBar score={factor.score} />
@@ -1185,13 +1409,20 @@ function AssetProfileView({ ticker }) {
       saveTickerData(ticker, updated);
       setData(getTickerData(ticker));
 
-      // Record signal for change tracking
+      // Record signal for change tracking (include factor breakdown for history chart)
       if (result.signal && result.signal !== "ERROR") {
+        const factors = {};
+        for (const f of result.factors) {
+          if (f.score !== null && f.score !== undefined && f.signal !== "ERROR") {
+            factors[f.name] = f.score;
+          }
+        }
         recordSignal(ticker, {
           signal: result.signal,
           compositeScore: result.composite,
           confidence: result.confidence,
           evaluatedAt: new Date().toISOString(),
+          factors,
         });
       }
     } catch (err) {
@@ -1313,6 +1544,9 @@ function AssetProfileView({ ticker }) {
           </div>
         )}
       </div>
+
+      {/* ── SCORE HISTORY CHART ── */}
+      {hasEvaluated && <ScoreHistoryChart ticker={ticker} />}
 
       {/* ── FACTOR SECTIONS ── */}
       {hasEvaluated && (
